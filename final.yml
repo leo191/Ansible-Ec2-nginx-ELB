@@ -1,5 +1,5 @@
 ---
-- name: A simple Load Balanced AWS blog using the Amazon standard linux AMI
+- name: A simple Load Balanced with two nginx instances 
   hosts: localhost
   connection: local
   gather_facts: False
