@@ -1,0 +1,81 @@
+---
+- name: A simple Load Balanced AWS blog using the Amazon standard linux AMI
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: forking a new ec2-instance
+      ec2:
+        key_name: DockerKeys
+        group_id: sg-01a244014433d5b98
+        instance_type: t2.micro
+        image: ami-029aa562
+        wait: yes
+        region: us-west-1
+        vpc_subnet_id: subnet-0e567b8b31409843d
+        assign_public_ip: yes
+        instance_tags:
+          Name: NginxFront
+          group: webservers
+        exact_count: 2
+        count_tag:
+          group: webservers
+      register: flaskWebsite
+
+    - name: wait for the servers to appear on the network
+      wait_for: host={{ item.public_ip }} port=22 delay=10 timeout=180 state=started
+      with_items: "{{ flaskWebsite.tagged_instances }}"
+
+    - name: add server ip addresses to hosts group
+      add_host: hostname={{ item.public_ip }} groupname=launched
+      with_items: "{{ flaskWebsite.tagged_instances }}"
+
+- name: configure the webservers (simple little job just installs nginx and a hello world page)
+  hosts: launched
+  remote_user: ec2-user
+  become: True
+  gather_facts: True
+  tasks:
+    - name: ensure nginx is at the latest version
+      yum: name=nginx state=latest
+    - name: start nginx
+      service:
+          name: nginx
+          state: started
+
+- name: spin up the load balancer and add the instances to it
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: setup a simple load balancer
+      ec2_elb_lb:
+        name: flaskapp-elb
+        state: present
+        region: us-west-1
+        subnets:
+          - subnet-0e567b8b31409843d
+          - subnet-0ff2a5f4b3a282668
+        security_group_ids: 'sg-01a244014433d5b98'
+        listeners:
+          - protocol: http
+            load_balancer_port: 80
+            instance_port: 80
+        health_check:
+            ping_protocol: http # options are http, https, ssl, tcp
+            ping_port: 80
+            ping_path: "/index.html" # not required for tcp or ssl
+            response_timeout: 5 # seconds
+            interval: 30 # seconds
+            unhealthy_threshold: 2
+            healthy_threshold: 10
+      register: site-elb
+
+    - name: add the  webservers to the load balancer
+      local_action: ec2_elb
+      args:
+        instance_id: "{{ item.id }}"
+        ec2_elbs: flaskapp-elb
+        state: present
+        region: us-west-1
+      with_items: "{{ flaskWebsite.tagged_instances }}"
